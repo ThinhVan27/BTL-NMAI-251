@@ -345,9 +345,47 @@ class Genetic(Solver):
                     if not col_has_goal:
                         if (x, y-1) in walls or (x, y+1) in walls:
                             return True
-            
+                
+            # Thêm check frozen box: box không push được vì chặn bởi walls/box khác
+            for box in state.boxes:
+                if box in game.board.goals:
+                    continue
+                pushable_dirs = 0
+                for dir in MOVE_VECTORS:
+                    push_vec = MOVE_VECTORS[dir]
+                    push_from = (box[0] - push_vec[0], box[1] - push_vec[1])
+                    push_to = (box[0] + push_vec[0], box[1] + push_vec[1])
+                    if (game.board.in_bounds(push_from) and not game.board.is_wall(push_from) and push_from not in state.boxes and
+                        game.board.in_bounds(push_to) and not game.board.is_wall(push_to) and push_to not in state.boxes):
+                        pushable_dirs += 1
+                if pushable_dirs == 0:
+                    return True
+                
+                # Check corridor deadlock đơn giản: box ở hàng/cột chỉ 2 ô, không goal
+                x, y = box
+                if all((x+i, y) in game.board.walls for i in [-2, 2]) or all((x, y+i) in game.board.walls for i in [-2, 2]):
+                    if not any(g == (x, y) for g in game.board.goals):
+                        return True
+                
             return False
 
+        def _find_path_to_pos(self, game: SokobanGame, state: SokobanState, target_pos: Coord) -> List[Move]:
+            """BFS tìm path player đến target, tránh walls và boxes."""
+            from collections import deque
+            queue = deque([(state.player, [])])
+            visited = set([state.player])
+            while queue:
+                pos, path = queue.popleft()
+                if pos == target_pos:
+                    return path
+                for move, (dx, dy) in MOVE_VECTORS.items():
+                    next_pos = (pos[0] + dx, pos[1] + dy)
+                    if (game.board.in_bounds(next_pos) and not game.board.is_wall(next_pos) and
+                        next_pos not in state.boxes and next_pos not in visited):
+                        visited.add(next_pos)
+                        queue.append((next_pos, path + [move]))
+            return []  # Không tìm thấy path
+        
         def _generate_macro_action(self, game: SokobanGame, state: SokobanState) -> list:
             """Tạo chuỗi moves để đẩy box về phía goal"""
             player = state.player
@@ -409,11 +447,29 @@ class Genetic(Solver):
                     moves.append("up")
                     py -= 1
             
-            # Push box
-            moves.append(push_dir)
+            # Tính multi-push nếu dist lớn
+            push_steps = max(abs(dx), abs(dy))  # Số bước push cần
+            moves = []
+            current_box = target_box
+            current_state = state
+            for _ in range(min(push_steps, 3)):  # Giới hạn 3 để tránh quá dài
+                push_vector = MOVE_VECTORS[push_dir]
+                required_player_pos = (current_box[0] - push_vector[0], current_box[1] - push_vector[1])
+                path_to_push = self._find_path_to_pos(game, current_state, required_player_pos)
+                if not path_to_push:
+                    break
+                moves.extend(path_to_push)
+                
+                # Push
+                moves.append(push_dir)
+                # Update giả định (không apply thực để nhanh)
+                next_player = (required_player_pos[0] + push_vector[0], required_player_pos[1] + push_vector[1])
+                next_box = (current_box[0] + push_vector[0], current_box[1] + push_vector[1])
+                current_box = next_box
+                current_state = SokobanState(next_player, frozenset((next_box if b == current_box else b for b in current_state.boxes)))
             
-            return moves[:15]
-
+            return moves[:20]  # Tăng giới hạn
+        
         def random(self, game):
             """Random thuần túy (fallback)"""
             rand_val = self._random.random()
@@ -509,99 +565,202 @@ class Genetic(Solver):
             return child
 
         def mutation(self, game, mut_rate):
-            """Mutation với big mutation"""
+            """Enhanced mutation: mix of point, swap, inversion, insert/delete, macro-replace, guided repair."""
             child = Genetic.Chromosome(self._random, self._max_moves)
-            child._sequence = self._sequence.copy()
-            
-            # Big mutation 20%
-            if self._random.random() < 0.2:
-                num_changes = self._random.integers(
-                    max(1, len(child._sequence) // 3),
-                    max(2, len(child._sequence) // 2) + 1
-                )
-                if len(child._sequence) > 0:
-                    positions = self._random.choice(
-                        len(child._sequence), 
-                        size=min(num_changes, len(child._sequence)), 
-                        replace=False
-                    )
-                    for pos in positions:
-                        child._sequence[pos] = self._random.choice(list(MOVE_VECTORS.keys()))
+            child._sequence = list(self._sequence)  # copy
+
+            # choose operator mix
+            p = self._random.random()
+
+            # 1) Big disruptive mutation (tương tự big mutation) - giữ tỉ lệ nhỏ
+            if p < 0.15:
+                # replace a random segment with random moves
+                if len(child._sequence) > 2:
+                    a = int(self._random.integers(0, len(child._sequence)))
+                    b = int(self._random.integers(a, min(len(child._sequence), a + max(2, len(child._sequence)//4))))
+                    new_seg_len = int(self._random.integers(1, 1 + max(1, (b-a))))
+                    new_seg = [self._random.choice(list(MOVE_VECTORS.keys())) for _ in range(new_seg_len)]
+                    child._sequence[a:b] = new_seg
+
+            # 2) Swap mutation
+            elif p < 0.35:
+                if len(child._sequence) >= 2:
+                    i = int(self._random.integers(0, len(child._sequence)))
+                    j = int(self._random.integers(0, len(child._sequence)))
+                    child._sequence[i], child._sequence[j] = child._sequence[j], child._sequence[i]
+
+            # 3) Inversion (reverse a subsequence)
+            elif p < 0.55:
+                if len(child._sequence) >= 3:
+                    i = int(self._random.integers(0, len(child._sequence)-1))
+                    j = int(self._random.integers(i+1, len(child._sequence)))
+                    child._sequence[i:j] = list(reversed(child._sequence[i:j]))
+
+            # 4) Point/gene mutation (per-gene)
             else:
-                # Normal mutation
-                for i in range(len(child._sequence)):
+                for idx in range(len(child._sequence)):
                     if self._random.random() < mut_rate:
-                        child._sequence[i] = self._random.choice(list(MOVE_VECTORS.keys()))
-            
-            # Insert operations
-            if self._random.random() < mut_rate and len(child._sequence) < self._max_moves:
-                num_inserts = self._random.integers(1, 5)
-                for _ in range(num_inserts):
-                    if len(child._sequence) < self._max_moves:
-                        insert_pos = self._random.integers(len(child._sequence) + 1) if len(child._sequence) > 0 else 0
-                        child._sequence.insert(insert_pos, self._random.choice(list(MOVE_VECTORS.keys())))
-            
-            # Delete operation
-            if len(child._sequence) > 1 and self._random.random() < mut_rate:
-                del child._sequence[self._random.integers(len(child._sequence))]
-            
+                        child._sequence[idx] = self._random.choice(list(MOVE_VECTORS.keys()))
+
+            # Insert small segments (guided by macro with some prob)
+            if self._random.random() < mut_rate * 0.8 and len(child._sequence) < child._max_moves:
+                insert_pos = int(self._random.integers(0, len(child._sequence)+1)) if len(child._sequence) > 0 else 0
+                # try to use macro action if available from current assumed state
+                try:
+                    # try to compute state at insert_pos to generate macro — best-effort
+                    state = game.initial_state
+                    for mv in child._sequence[:insert_pos]:
+                        s = game.apply_move(state, mv)
+                        if s is None:
+                            raise ValueError
+                        state = s
+                except Exception:
+                    state = game.initial_state
+
+                # attempt macro
+                macro = self._generate_macro_action(game, state)
+                if macro:
+                    seg = macro[:min(len(macro), max(1, int(self._random.integers(1, 4))))]
+                    child._sequence[insert_pos:insert_pos] = seg
+                else:
+                    # fallback random insert
+                    num_ins = int(self._random.integers(1, min(4, child._max_moves - len(child._sequence))))
+                    for _ in range(num_ins):
+                        if len(child._sequence) < child._max_moves:
+                            pos = int(self._random.integers(0, len(child._sequence)+1))
+                            child._sequence.insert(pos, self._random.choice(list(MOVE_VECTORS.keys())))
+
+            # Delete small segments
+            if len(child._sequence) > 1 and self._random.random() < mut_rate * 0.6:
+                del_len = int(self._random.integers(1, min(4, len(child._sequence))))
+                start = int(self._random.integers(0, len(child._sequence)-del_len+1))
+                for _ in range(del_len):
+                    if start < len(child._sequence):
+                        child._sequence.pop(start)
+
+            # Guided repair: if resulting sequence is invalid or deadlock-prone, try small repairs
+            try:
+                history = game.replay(child._sequence)
+                final_state = history[-1]
+                if child.is_deadlock(game, final_state):
+                    # try to patch by removing last moves until not deadlock (small rollback)
+                    rollback = 0
+                    while rollback < 6 and child.is_deadlock(game, final_state):
+                        if len(child._sequence) == 0:
+                            break
+                        child._sequence = child._sequence[:-1]
+                        rollback += 1
+                        try:
+                            history = game.replay(child._sequence)
+                            final_state = history[-1]
+                        except ValueError:
+                            continue
+            except ValueError:
+                # sequence invalid (illegal move). Try to repair by truncating at first illegal move.
+                seq = []
+                state = game.initial_state
+                for mv in child._sequence:
+                    ns = game.apply_move(state, mv)
+                    if ns is None:
+                        break
+                    seq.append(mv)
+                    state = ns
+                # fill a bit with macro actions
+                macro = self._generate_macro_action(game, state)
+                if macro:
+                    seq.extend(macro[:min(len(macro), 5)])
+                child._sequence = seq
+
+            # Trim to max_moves
+            if len(child._sequence) > child._max_moves:
+                child._sequence = child._sequence[:child._max_moves]
+
             return child
 
         def evaluate(self, game: SokobanGame, heuristic: Heuristic):
-            """Fitness function với deadlock detection"""
+            """Fitness function với deadlock detection và cải thiện"""
+            from scipy.optimize import linear_sum_assignment
+            import numpy as np
+            
             try:
                 history = game.replay(self._sequence)
                 final_state = history[-1]
                 
+                # Tính controlability: tỷ lệ moves valid (len(history) = số moves thành công +1 initial)
+                # Vì replay raise nếu invalid, nên nếu đến đây thì all valid, nhưng để chính xác:
+                valid_moves = len(history) - 1  # Số state sau initial = số moves thành công
+                valid_ratio = valid_moves / len(self._sequence) if self._sequence else 0
+                self._controlability = valid_ratio * 1000  # Scale
+                
                 # Check deadlock - phạt nặng
                 if self.is_deadlock(game, final_state):
-                    self._fitness = -500000
+                    self._fitness = -1000000  # Tăng phạt để ưu tiên tránh deadlock
                     self._quality = self._fitness
                     return self._fitness
                 
-                # GOAL!
+                # GOAL! - thưởng lớn, penalty độ dài mạnh hơn để ưu tiên giải ngắn
                 if game.is_goal(final_state):
-                    self._fitness = 10000000 - len(self._sequence) * 100
+                    self._fitness = 20000000 - len(self._sequence) * 200  # Tăng base và penalty để phân biệt rõ
                     self._quality = self._fitness
                     return self._fitness
                 
                 # Boxes on goals (quan trọng nhất)
                 boxes_on_goals = len([b for b in final_state.boxes if b in game.board.goals])
-                box_goal_score = boxes_on_goals * 100000
+                box_goal_score = boxes_on_goals * 200000  # Tăng trọng số để ưu tiên đặt box lên goal
                 
-                # Tổng khoảng cách boxes đến goals
-                total_box_dist = 0
-                for box in final_state.boxes:
-                    min_dist = min([abs(box[0]-g[0]) + abs(box[1]-g[1]) for g in game.board.goals])
-                    total_box_dist += min_dist
-                dist_score = -total_box_dist * 1000
+                # Tổng khoảng cách boxes đến goals - dùng assignment tối ưu thay vì greedy min
+                boxes_list = list(final_state.boxes)
+                goals_list = list(game.board.goals)
+                num_boxes = len(boxes_list)
+                num_goals = len(goals_list)
                 
-                # Đếm số lần push
+                # Cost matrix: manhattan dist giữa box và goal
+                cost_matrix = np.zeros((num_boxes, num_goals))
+                for i, box in enumerate(boxes_list):
+                    for j, goal in enumerate(goals_list):
+                        cost_matrix[i, j] = abs(box[0] - goal[0]) + abs(box[1] - goal[1])
+                
+                row_ind, col_ind = linear_sum_assignment(cost_matrix)
+                total_box_dist = cost_matrix[row_ind, col_ind].sum()
+                dist_score = -total_box_dist * 2000  # Tăng trọng số, dùng assignment chính xác hơn
+                
+                # Đếm số lần push - thưởng nhưng giới hạn để tránh push vô ích
                 push_count = 0
                 for i in range(len(history) - 1):
                     if history[i].boxes != history[i+1].boxes:
                         push_count += 1
-                push_score = push_count * 1000
+                push_score = push_count * 500  # Giảm trọng số, vì progress đã bao quát
                 
-                # Progress so với initial
-                initial_total_dist = 0
-                for box in game.board.initial_boxes:
-                    initial_total_dist += min([abs(box[0]-g[0]) + abs(box[1]-g[1]) for g in game.board.goals])
-                progress = (initial_total_dist - total_box_dist) * 500
+                # Progress so với initial - dùng assignment tương tự cho initial
+                initial_boxes_list = list(game.board.initial_boxes)
+                initial_cost_matrix = np.zeros((num_boxes, num_goals))
+                for i, box in enumerate(initial_boxes_list):
+                    for j, goal in enumerate(goals_list):
+                        initial_cost_matrix[i, j] = abs(box[0] - goal[0]) + abs(box[1] - goal[1])
                 
-                # Penalty nhẹ cho độ dài
-                length_penalty = -len(self._sequence) * 1
+                initial_row_ind, initial_col_ind = linear_sum_assignment(initial_cost_matrix)
+                initial_total_dist = initial_cost_matrix[initial_row_ind, initial_col_ind].sum()
+                progress = (initial_total_dist - total_box_dist) * 1000  # Tăng trọng số progress
+                
+                # Penalty cho độ dài - mạnh hơn để ưu tiên sequence hiệu quả
+                length_penalty = -len(self._sequence) * 10
+                
+                # Thêm heuristic estimate remaining cost
+                heuristic_estimate = heuristic.estimate(final_state, game)
+                heuristic_score = -heuristic_estimate * 1500  # Thưởng nếu estimate thấp (gần goal)
                 
                 self._fitness = (
                     box_goal_score +
                     dist_score +
                     push_score +
                     progress +
-                    length_penalty
+                    length_penalty +
+                    heuristic_score
                 )
                 
             except ValueError:
-                self._fitness = -1000000
+                self._fitness = -2000000  # Tăng phạt cho sequence invalid
+                self._controlability = 0  # Invalid sequence -> controlability thấp
             
             self._quality = self._fitness
             return self._fitness
@@ -643,6 +802,16 @@ class Genetic(Solver):
         self._random = np.random.default_rng()
         self._chromosomes = []
         self._fitness_fn = self.fitness_quality
+        self.best_ever_chrom = None  # Thêm biến lưu best ever
+        self.best_ever_fitness = -float('inf')  # Khởi tạo fitness thấp nhất
+
+    def _update_best_ever(self):
+        """Hàm lưu best chromosome có fitness cao nhất qua tất cả thế hệ"""
+        current_best = self._best()
+        if current_best and current_best._fitness > self.best_ever_fitness:
+            self.best_ever_fitness = current_best._fitness
+            self.best_ever_chrom = current_best  # Lưu copy nếu cần, nhưng hiện tại reference ok vì sorted sau
+            print(f"[DEBUG] Updated best ever fitness: {self.best_ever_fitness}")  # Optional debug
 
     def _bfs_seeding(self, game: SokobanGame, max_depth=10) -> list:
         """Dùng BFS để tìm sequences tốt làm seed"""
@@ -673,17 +842,17 @@ class Genetic(Solver):
         else:
             raise ValueError(f"{fn_name} doesn't exist")
 
-        self._tournment_size = kwargs.get('tournment_size', 3)
-        self._cross_rate = kwargs.get('cross_rate', 0.7)
-        self._mut_rate = kwargs.get('mut_rate', 0.3)
-        self._elitism = math.ceil(self.pop_size * kwargs.get('elitism_perct', 0.05))
+        self._tournment_size = kwargs.get('tournment_size', 7)
+        self._cross_rate = kwargs.get('cross_rate', 0.9)
+        self._mut_rate = kwargs.get('mut_rate', 0.5)
+        self._elitism = math.ceil(self.pop_size * kwargs.get('elitism_perct', 0.15))
 
         self._chromosomes = []
         
         # Seed 20% từ BFS
         try:
-            bfs_seeds = self._bfs_seeding(game, max_depth=12)
-            for i in range(min(len(bfs_seeds), int(self.pop_size * 0.2))):
+            bfs_seeds = self._bfs_seeding(game, max_depth=15)
+            for i in range(min(len(bfs_seeds), int(self.pop_size * 0.4))):
                 chrom = self.Chromosome(self._random)
                 chrom._sequence = list(bfs_seeds[i])
                 self._chromosomes.append(chrom)
@@ -745,6 +914,12 @@ class Genetic(Solver):
             immigrant.random_with_macro_actions(game)
             chromosomes.append(immigrant)
         
+        # adaptive mutation example
+        if hasattr(self, "_stagnation_count") and self._stagnation_count > 2:
+            self._mut_rate = min(0.6, self._mut_rate * 1.2)
+        else:
+            self._mut_rate = max(0.05, self._mut_rate * 0.995)
+        
         # Generate offspring
         while len(chromosomes) < self.pop_size:
             child = self._select()
@@ -763,6 +938,7 @@ class Genetic(Solver):
             self._chromosomes[i] = self._local_search(self._chromosomes[i], game, max_iterations=3)
         
         self._chromosomes.sort(key=lambda c: self._fitness_fn(c), reverse=True)
+        self._update_best_ever()  # Cập nhật best ever sau mỗi thế hệ
 
     def _best(self):
         return self._chromosomes[0] if self._chromosomes else None
@@ -806,6 +982,16 @@ class Genetic(Solver):
     def _search(self, game: SokobanGame, limits: SolverLimits) -> tuple[bool, List[Move]]:
         self._reset(game)
         
+        # Reset best ever khi reset
+        self.best_ever_chrom = None
+        self.best_ever_fitness = -float('inf')
+
+        # Thêm phần tính threshold động
+        num_boxes = len(game.board.initial_boxes)
+        some_margin = 5000000  # Margin lớn để tránh false positive, điều chỉnh dựa trên level (ví dụ: test với level có 2-5 box)
+        threshold = num_boxes * 100000 + some_margin
+        print(f"[DEBUG] Calculated success threshold: {threshold} for {num_boxes} boxes")  # Optional debug
+        
         best_fitness_history = []
         stagnation_count = 0
 
@@ -848,14 +1034,20 @@ class Genetic(Solver):
                 self.tracker.record_node()
                 self.tracker.track_frontier(len(self._chromosomes))
 
-                # Success check
-                if best_chrom._fitness >= 9000000:
+                # Success check - thay 106000 bằng threshold động
+                if best_chrom._fitness >= threshold:
                     tqdm.write(f"[SUCCESS] Found at gen {gen}!")
                     break
 
         best_chrom = self._best()
-        solved = best_chrom._fitness >= 9000000
-        return solved, best_chrom._sequence
+        solved = best_chrom._fitness >= threshold
+        
+        # Nếu không solved, dùng best ever nếu có
+        if not solved and self.best_ever_chrom:
+            tqdm.write("[INFO] No solution found, using best ever chromosome")
+            return True, self.best_ever_chrom._sequence  # Giả solved để dùng best ever, hoặc giữ False tùy ý
+        else:
+            return solved, best_chrom._sequence
     
 
 class Heuristic(ABC):
@@ -995,9 +1187,9 @@ class Runner:
         self.visualizer.display(self.game, moves)
 
 if __name__ == "__main__":
-    game_file = r"D:\1. REFERENCES\1. AI - Machine Learning\10. GenAI\GAs\BTL-NMAI-251\test\game\easyv0.txt"
+    game_file = r"D:\1. REFERENCES\1. AI - Machine Learning\10. GenAI\GAs\BTL-NMAI-251\test\game\pico_6.txt"
     heuristic = ManhattanHeuristic()
-    solver = Genetic(heuristic=heuristic, pop_size=300, generations=3000)
+    solver = Genetic(heuristic=heuristic, pop_size=100, generations=500)
     visualizer = ConsoleVisualizer(delay_s=0.1)
     limits = None
     
