@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 import time
 import tracemalloc
 import pyautogui
+import heapq
 
 GAME_ROOT = Path("test/game")
 SOLUTION_ROOT = Path("test/solution")
@@ -313,15 +314,18 @@ class AStarSolver(Solver):
         self._init_cost_functions(game)
         
         openSet = set()
-        openSet.add(self._encode(game.initial_state))
-        
+        openHeap = []
+        encoded_init_state = self._encode(game.initial_state)
+        openSet.add(encoded_init_state)
+        heapq.heappush(openHeap, (self.g.get(encoded_init_state, float('inf')), encoded_init_state))
+                
         cameFrom = dict()
         self.tracker.record_node()
-        
         while len(openSet) > 0:
             self.tracker.track_frontier(len(openSet))
             
-            current_state = min([state for state in openSet], key=lambda s: self.f.get(s, float('inf')))
+            # current_state = min([state for state in openSet], key=lambda s: self.f.get(s, float('inf')))
+            _, current_state = heapq.heappop(openHeap)
             current_sokobanState = SokobanState(*self._decode(current_state))
             
             if game.is_goal(current_sokobanState):
@@ -330,7 +334,6 @@ class AStarSolver(Solver):
             openSet.remove(current_state)
             
             for move, state in game.successors(current_sokobanState):
-                self.tracker.record_node()
                 path_cost = 0.0
                 if state.player in current_sokobanState.boxes:
                     path_cost += 1.0
@@ -340,12 +343,14 @@ class AStarSolver(Solver):
                 succ_state = self._encode(state)
                 temp_gScore_succ = self.g.get(current_state, float('inf')) + path_cost
                 if temp_gScore_succ < self.g.get(succ_state, float('inf')):
+                    self.tracker.record_node()
                     cameFrom[succ_state] = (current_state, move)
                     self.g[succ_state] = temp_gScore_succ
                     self.f[succ_state] = temp_gScore_succ + self.heuristic.estimate(state, game)
                 
                     if succ_state not in openSet:
                         openSet.add(succ_state)
+                        heapq.heappush(openHeap, (self.f.get(succ_state, float('inf')), succ_state))
         
         print("[INFO] No Solution!")
         return (False, [])
@@ -390,12 +395,10 @@ class ManhattanHeuristic(Heuristic):
         h = 0.0
         min_dist_player2box = min([self._mahattan_dist(player, box) for box in boxes])
         
-        mean_heuristic_dist_of_boxes2goals = 0.0
-        n_boxes = len(boxes)
+        heuristic_dist_of_boxes2goals = 0.0
         for box in boxes:
-            mean_heuristic_dist_of_boxes2goals += min([self._mahattan_dist(box, goal) for goal in goals]) / n_boxes
-        
-        h = min_dist_player2box + mean_heuristic_dist_of_boxes2goals
+            heuristic_dist_of_boxes2goals += min([self._mahattan_dist(box, goal) for goal in goals])
+        h = min_dist_player2box + heuristic_dist_of_boxes2goals
         
         return h
     
@@ -491,11 +494,11 @@ class Runner:
         self._visulize(result)
     
     def _save_solution(self, moves: List[str]) -> None:
-        game_path = SOLUTION_ROOT/Path(self.game_file[:-4]+"_solution.txt")
+        game_path = SOLUTION_ROOT/Path(self.game_file)
         moves = game_path.write_text(", ".join(moves))
     
     def _load_solution(self) -> List[str]:
-        solution_path = SOLUTION_ROOT/Path(self.game_file[:-4]+"_solution.txt")
+        solution_path = SOLUTION_ROOT/Path(self.game_file)
         moves_str = solution_path.read_text(encoding="utf-8")
         return moves_str.split(", ")
     
@@ -506,12 +509,13 @@ class Runner:
         print(f"[INFO] Nodes: {result.nodes_expanded}")
         print(f"[INFO] Max frontier: {result.max_frontier}")
         self.visualizer.display(self.game, moves)
+    
 
 if __name__ == "__main__":
-    game_file = "mini_32.txt"
+    game_file = "micro_8.txt"
     heuristic = ManhattanHeuristic()
     solver = AStarSolver(heuristic)
-    visualizer = ConsoleVisualizer(delay_s=0.1)
+    visualizer = PlaywrightVisualizer(delay_s=0.05)
     limits = None
     
     runner = Runner(game_file=game_file,
