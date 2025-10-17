@@ -9,8 +9,13 @@ from abc import ABC, abstractmethod
 import time
 import tracemalloc
 import pyautogui
+import collections
+import itertools
 import heapq
+import os
+import argparse
 
+counter = itertools.count()
 GAME_ROOT = Path("test/game")
 SOLUTION_ROOT = Path("test/solution")
 
@@ -217,8 +222,8 @@ class ComplexityTracker:
 
 @dataclass
 class SolverLimits:
-    time_limit_s: Optional[float] = None
-    node_limit: Optional[int] = None
+    time_limit_s: float = None
+    node_limit: int = None
 
 
 @dataclass
@@ -238,7 +243,7 @@ class Solver(ABC):
         self.tracker = ComplexityTracker()
 
     def solve(self, game: SokobanGame, limits: Optional[SolverLimits] = None) -> SolverResult:
-        limits = limits or SolverLimits()
+        # limits = limits or SolverLimits()
         self.tracker = ComplexityTracker()
         self.tracker.start()
         try:
@@ -258,18 +263,52 @@ class Solver(ABC):
     def _search(self, game: SokobanGame, limits: SolverLimits) -> tuple[bool, List[Move]]:
         raise NotImplementedError
 
+
 class BFSSolver(Solver):
     name = "bfs"
 
     def _search(self, game: SokobanGame, limits: SolverLimits) -> tuple[bool, List[Move]]:
-        raise NotImplementedError("BFS solver not implemented yet")
 
+        initial_state = game.initial_state
 
-class DFSSolver(Solver):
-    name = "dfs"
+        # Hàng đợi (queue) chứa các tuple (trạng thái, danh_sách_nước_đi)
+        queue = collections.deque([(initial_state, [])])
 
-    def _search(self, game: SokobanGame, limits: SolverLimits) -> tuple[bool, List[Move]]:
-        raise NotImplementedError("DFS solver not implemented yet")
+        # Tập hợp các trạng thái đã duyệt để tránh lặp
+        visited_states = {initial_state}
+
+        self.tracker.track_frontier(len(queue))
+
+        while queue:
+            # Lấy trạng thái hiện tại và đường đi ra khỏi hàng đợi
+            current_state, current_moves = queue.popleft()
+            self.tracker.record_node() # Ghi nhận đã mở rộng 1 node
+
+            # Kiểm tra giới hạn thời gian và số node
+            if limits and (time.perf_counter() - self.tracker._start_time) > limits.time_limit_s:
+                print("[INFO] Time limit exceeded")
+                return False, []
+            if limits and self.tracker.nodes_expanded > limits.node_limit:
+                print("[INFO] Node limit exceeded")
+                return False, []
+
+            # 2. Kiểm tra xem có phải trạng thái đích không
+            if game.is_goal(current_state):
+                return True, current_moves  # Trả về kết quả và chuỗi hành động
+
+            # 3. Lấy các trạng thái kế tiếp hợp lệ
+            for move, next_state in game.successors(current_state):
+                # 4. Nếu trạng thái kế tiếp chưa được duyệt
+                if next_state not in visited_states:
+                    visited_states.add(next_state)
+                    new_moves = current_moves + [move]
+                    queue.append((next_state, new_moves))
+
+            # Cập nhật kích thước lớn nhất của hàng đợi
+            self.tracker.track_frontier(len(queue))
+
+        # Nếu hàng đợi rỗng mà không tìm thấy giải pháp
+        return False, []
 
 
 class AStarSolver(Solver):
@@ -278,29 +317,10 @@ class AStarSolver(Solver):
     def __init__(self, heuristic: Optional["Heuristic"] = None) -> None:
         super().__init__()
         self.heuristic = heuristic
-    
-    def _encode(self, state: SokobanState) -> str:
-        player_pos = state.player
-        box_pos = state.boxes
         
-        pos2str = lambda pos: str(pos[0]) + "," + str(pos[1])
-        return "_".join([pos2str(player_pos)] + [pos2str(pos) for pos in box_pos])
-    
-    def _decode(self, state: str) -> Tuple[Tuple[int, int], frozenset[Tuple[int, int]]]:
-        pos = state.split("_")
-        
-        box_pos = set()
-        for i, p in enumerate(pos):
-            if i == 0:
-                player_pos = (int(p.split(",")[0]), int(p.split(",")[1]))
-            else:
-                box_pos.add((int(p.split(",")[0]), int(p.split(",")[1])))
-        
-        return (player_pos, frozenset(box_pos))
-
     def _init_cost_functions(self, game: SokobanGame) -> None:
         
-        init_state = self._encode(game.initial_state)
+        init_state = game.initial_state
         
         self.f = {} # Cost function = g(n) + h(n)
         self.g = {} # Cost funxtion from init state to n
@@ -315,44 +335,46 @@ class AStarSolver(Solver):
         
         openSet = set()
         openHeap = []
-        encoded_init_state = self._encode(game.initial_state)
-        openSet.add(encoded_init_state)
-        heapq.heappush(openHeap, (self.g.get(encoded_init_state, float('inf')), encoded_init_state))
-                
+        init_state = game.initial_state
+        openSet.add(init_state)
+        heapq.heappush(openHeap, (self.g.get(init_state, float('inf')), next(counter), init_state))
+        
         cameFrom = dict()
         self.tracker.record_node()
         while len(openSet) > 0:
             self.tracker.track_frontier(len(openSet))
-            
-            # current_state = min([state for state in openSet], key=lambda s: self.f.get(s, float('inf')))
-            _, current_state = heapq.heappop(openHeap)
-            current_sokobanState = SokobanState(*self._decode(current_state))
+            if limits and (time.perf_counter() - self.tracker._start_time) > limits.time_limit_s:
+                print("[INFO] Time limit exceeded")
+                return False, []
+            if limits and self.tracker.nodes_expanded > limits.node_limit:
+                print("[INFO] Node limit exceeded")
+                return False, []
+            _, _, current_state = heapq.heappop(openHeap)
+            current_sokobanState =  current_state 
             
             if game.is_goal(current_sokobanState):
                 return (True, self._reconstruct_path(cameFrom, current_state))
             
             openSet.remove(current_state)
             
-            for move, state in game.successors(current_sokobanState):
+            for move, succ_state in game.successors(current_sokobanState):
                 path_cost = 0.0
-                if state.player in current_sokobanState.boxes:
+                if succ_state.player in current_sokobanState.boxes:
                     path_cost += 1.0
                 else:
                     path_cost += 2.0
                 
-                succ_state = self._encode(state)
                 temp_gScore_succ = self.g.get(current_state, float('inf')) + path_cost
-                if temp_gScore_succ < self.g.get(succ_state, float('inf')):
-                    self.tracker.record_node()
+                if temp_gScore_succ < self.g.get(succ_state, float('inf')):                    
                     cameFrom[succ_state] = (current_state, move)
                     self.g[succ_state] = temp_gScore_succ
-                    self.f[succ_state] = temp_gScore_succ + self.heuristic.estimate(state, game)
+                    self.f[succ_state] = temp_gScore_succ + self.heuristic.estimate(succ_state, game)
                 
-                    if succ_state not in openSet:
+                    if succ_state not in openSet:                        
+                        self.tracker.record_node()
                         openSet.add(succ_state)
-                        heapq.heappush(openHeap, (self.f.get(succ_state, float('inf')), succ_state))
+                        heapq.heappush(openHeap, (self.f.get(succ_state, float('inf')), next(counter), succ_state))
         
-        print("[INFO] No Solution!")
         return (False, [])
     
     def _reconstruct_path(self, cameFrom: Dict[str, str], current_state: str):
@@ -364,17 +386,6 @@ class AStarSolver(Solver):
         
         return list(reversed(moves))
         
-        
-class Genetic(ABC):
-    name = 'genetic'
-    
-    def __init__(self, heuristic: Optional["Heuristic"] = None) -> None:
-        super().__init__()
-        self.heuristic = heuristic
-    
-    def _search(self, game: SokobanGame, limits: SolverLimits) -> tuple[bool, List[Move]]:
-        raise NotImplementedError("Genetic solver not implemented yet")
-
 
 class Heuristic(ABC):
     @abstractmethod
@@ -398,7 +409,7 @@ class ManhattanHeuristic(Heuristic):
         heuristic_dist_of_boxes2goals = 0.0
         for box in boxes:
             heuristic_dist_of_boxes2goals += min([self._mahattan_dist(box, goal) for goal in goals])
-        h = min_dist_player2box + heuristic_dist_of_boxes2goals
+        h = min_dist_player2box/len(boxes) + heuristic_dist_of_boxes2goals
         
         return h
     
@@ -457,7 +468,51 @@ def load_board_from_file(path: str | Path) -> SokobanBoard:
 def load_game_from_path(path: Path) -> SokobanGame:
     return SokobanGame(load_board_from_path(path))
 
+class Runner:
+    def __init__(self, game_file: str, 
+                 solver: Solver, 
+                 visulizer: SolutionVisualizer, 
+                 limits: Optional[SolverLimits]):
+        self.game_file = game_file
+        self.solver = solver
+        self.visualizer = visulizer
+        self.limits = limits
+        self.game = load_game_from_path(GAME_ROOT/Path(self.game_file))
+        
+    def run_solver(self, replace=True) -> None:
+        if replace or not os.path.exists(SOLUTION_ROOT/Path(self.game_file)):
+            result = self.solver.solve(self.game, self.limits)
+            self._save_solution(result)
+        else:
+            result = self._load_solution()
+        self._visulize(result)
+    
+    def _save_solution(self, result: SolverResult) -> None:
+        game_path = SOLUTION_ROOT/Path(self.game_file)
+        moves = ", ".join(result.move_sequence)
+        with open(game_path, 'w', encoding='utf-8') as f:
+            f.write(moves)
+    
+    def _load_solution(self) -> SolverResult:
+        solution_path = SOLUTION_ROOT/Path(self.game_file)
+        with open(solution_path, 'r', encoding='utf-8') as f:
+            moves = f.read()
+        
+        return SolverResult(solved=True,
+                            move_sequence=moves.split(", "),
+                            elapsed_time_s=-1,
+                            nodes_expanded=-1,
+                            max_frontier=-1,
+                            peak_memory_bytes=-1)
 
+    def _visulize(self, result: SolverResult) -> None:
+        time.sleep(3) # Wait for playing
+        self.visualizer.display(self.game, result.move_sequence)
+        print(f"[INFO] Time elapsed: {result.elapsed_time_s}")
+        print(f"[INFO] Used memory: {result.peak_memory_bytes}")
+        print(f"[INFO] Nodes: {result.nodes_expanded}")
+        print(f"[INFO] Max frontier: {result.max_frontier}")
+        
 __all__ = [
     "SokobanBoard",
     "SokobanState",
@@ -479,47 +534,34 @@ __all__ = [
     "load_board_from_file",
     "load_game_from_path",
 ]
-
-class Runner:
-    def __init__(self, game_file: str, solver: Solver, visulizer: SolutionVisualizer, limits: Optional[SolverLimits]):
-        self.game_file = game_file
-        self.solver = solver
-        self.visualizer = visulizer
-        self.limits = limits
-        self.game = load_game_from_path(GAME_ROOT/Path(self.game_file))
-        
-    def run_solver(self) -> None:
-        result = self.solver.solve(self.game, self.limits)
-        self._save_solution(result.move_sequence)
-        self._visulize(result)
-    
-    def _save_solution(self, moves: List[str]) -> None:
-        game_path = SOLUTION_ROOT/Path(self.game_file)
-        moves = game_path.write_text(", ".join(moves))
-    
-    def _load_solution(self) -> List[str]:
-        solution_path = SOLUTION_ROOT/Path(self.game_file)
-        moves_str = solution_path.read_text(encoding="utf-8")
-        return moves_str.split(", ")
-    
-    def _visulize(self, result: SolverResult) -> None:
-        moves = self._load_solution()
-        print(f"[INFO] Time elapsed: {result.elapsed_time_s}")
-        print(f"[INFO] Used memory: {result.peak_memory_bytes}")
-        print(f"[INFO] Nodes: {result.nodes_expanded}")
-        print(f"[INFO] Max frontier: {result.max_frontier}")
-        self.visualizer.display(self.game, moves)
     
 
 if __name__ == "__main__":
-    game_file = "micro_8.txt"
-    heuristic = ManhattanHeuristic()
-    solver = AStarSolver(heuristic)
-    visualizer = PlaywrightVisualizer(delay_s=0.05)
+    parser = argparse.ArgumentParser(description="Sokoban solver runner")
+    parser.add_argument("-s", "--solver", choices=["astar", "bfs"], default="bfs",
+                        help="Solver to use")
+    parser.add_argument("-v", "--visualizer", choices=["console", "playright"], default="console",
+                        help="Visualizer to use ('playright' maps to PlaywrightVisualizer)")
+    parser.add_argument("-g", "--game-file", default="mini_1.txt", help="Relative game file under test/game")
+    parser.add_argument("-r", "--replace", action="store_true", help="Run solver and save new solution if it has already existed")
+    args = parser.parse_args()
+    
+    # Select solver
+    if args.solver == "astar":
+        heuristic = ManhattanHeuristic()
+        solver = AStarSolver(heuristic)
+    else:
+        solver = BFSSolver()
+    # Select visualizer (note: 'playright' per CLI maps to PlaywrightVisualizer)
+    if args.visualizer == "console":
+        visualizer = ConsoleVisualizer(delay_s=0.1)
+    else:
+        visualizer = PlaywrightVisualizer(delay_s=0.1)
+    
     limits = None
     
-    runner = Runner(game_file=game_file,
+    runner = Runner(game_file=args.game_file,
                     solver=solver,
                     visulizer=visualizer,
                     limits=limits)
-    runner.run_solver()
+    runner.run_solver(replace=args.replace)
