@@ -509,7 +509,7 @@ class Runner:
         time.sleep(3) # Wait for playing
         self.visualizer.display(self.game, result.move_sequence)
         print(f"[INFO] Time elapsed: {result.elapsed_time_s}")
-        print(f"[INFO] Used memory: {result.peak_memory_bytes}")
+        print(f"[INFO] Peak memory: {result.peak_memory_bytes}")
         print(f"[INFO] Nodes: {result.nodes_expanded}")
         print(f"[INFO] Max frontier: {result.max_frontier}")
         
