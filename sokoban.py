@@ -337,7 +337,7 @@ class AStarSolver(Solver):
         openHeap = []
         init_state = game.initial_state
         openSet.add(init_state)
-        heapq.heappush(openHeap, (self.g.get(init_state, float('inf')), next(counter), init_state))
+        heapq.heappush(openHeap, (self.f.get(init_state, float('inf')), next(counter), init_state))
         
         cameFrom = dict()
         self.tracker.record_node()
@@ -350,19 +350,14 @@ class AStarSolver(Solver):
                 print("[INFO] Node limit exceeded")
                 return False, []
             _, _, current_state = heapq.heappop(openHeap)
-            current_sokobanState =  current_state 
             
-            if game.is_goal(current_sokobanState):
+            if game.is_goal(current_state):
                 return (True, self._reconstruct_path(cameFrom, current_state))
             
             openSet.remove(current_state)
             
-            for move, succ_state in game.successors(current_sokobanState):
-                path_cost = 0.0
-                if succ_state.player in current_sokobanState.boxes:
-                    path_cost += 1.0
-                else:
-                    path_cost += 2.0
+            for move, succ_state in game.successors(current_state):
+                path_cost = 1.0
                 
                 temp_gScore_succ = self.g.get(current_state, float('inf')) + path_cost
                 if temp_gScore_succ < self.g.get(succ_state, float('inf')):                    
@@ -409,7 +404,7 @@ class ManhattanHeuristic(Heuristic):
         heuristic_dist_of_boxes2goals = 0.0
         for box in boxes:
             heuristic_dist_of_boxes2goals += min([self._mahattan_dist(box, goal) for goal in goals])
-        h = min_dist_player2box/len(boxes) + heuristic_dist_of_boxes2goals
+        h = min_dist_player2box + heuristic_dist_of_boxes2goals
         
         return h
     
@@ -554,9 +549,9 @@ if __name__ == "__main__":
         solver = BFSSolver()
     # Select visualizer (note: 'playright' per CLI maps to PlaywrightVisualizer)
     if args.visualizer == "console":
-        visualizer = ConsoleVisualizer(delay_s=0.1)
+        visualizer = ConsoleVisualizer(delay_s=0.05)
     else:
-        visualizer = PlaywrightVisualizer(delay_s=0.1)
+        visualizer = PlaywrightVisualizer(delay_s=0.05)
     
     limits = None
     
