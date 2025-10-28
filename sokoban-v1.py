@@ -1162,7 +1162,7 @@ class Runner:
         self.visualizer.display(self.game, moves)
 
 if __name__ == "__main__":
-    game_file = r"D:\1. REFERENCES\1. AI - Machine Learning\10. GenAI\GAs\BTL-NMAI-251\test\game\mini_32.txt"
+    game_file = r"D:\1-REFERENCES\01-AI-ML-DL\10-GenAI\GAs\BTL-NMAI-251\test\game\easyv1.txt"
     heuristic = ManhattanHeuristic()
     solver = Genetic(heuristic=heuristic, pop_size=100, generations=500)
     visualizer = ConsoleVisualizer(delay_s=0.1)
