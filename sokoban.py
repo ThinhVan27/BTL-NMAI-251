@@ -16,7 +16,7 @@ import os
 import argparse
 
 counter = itertools.count()
-GAME_ROOT = Path("test/game")
+GAME_ROOT = Path(r"D:\1-REFERENCES\01-AI-ML-DL\10-GenAI\GAs\BTL-NMAI-251\test\game")
 SOLUTION_ROOT = Path("test/solution")
 
 Coord = Tuple[int, int]
