@@ -16,7 +16,7 @@ import os
 import argparse
 
 counter = itertools.count()
-GAME_ROOT = Path(r"D:\1-REFERENCES\01-AI-ML-DL\10-GenAI\GAs\BTL-NMAI-251\test\game")
+GAME_ROOT = Path("test/game")
 SOLUTION_ROOT = Path("test/solution")
 
 Coord = Tuple[int, int]
@@ -333,6 +333,7 @@ class AStarSolver(Solver):
     def _search(self, game: SokobanGame, limits: SolverLimits) -> tuple[bool, List[Move]]:
         self._init_cost_functions(game)
         
+        # Init set and heap with start state
         openSet = set()
         openHeap = []
         init_state = game.initial_state
@@ -341,30 +342,39 @@ class AStarSolver(Solver):
         
         cameFrom = dict()
         self.tracker.record_node()
+        # Loop until openSet is empty
         while len(openSet) > 0:
             self.tracker.track_frontier(len(openSet))
+            # Check limits
             if limits and (time.perf_counter() - self.tracker._start_time) > limits.time_limit_s:
                 print("[INFO] Time limit exceeded")
                 return False, []
             if limits and self.tracker.nodes_expanded > limits.node_limit:
                 print("[INFO] Node limit exceeded")
                 return False, []
+            # Pop the state with minimum f score
             _, _, current_state = heapq.heappop(openHeap)
             
+            # If it's goal, finish the searching
             if game.is_goal(current_state):
                 return (True, self._reconstruct_path(cameFrom, current_state))
             
+            # Pop this state out of openSet
             openSet.remove(current_state)
             
+            # Iterate current state's successors
             for move, succ_state in game.successors(current_state):
-                path_cost = 1.0
+                path_cost = 1.0 # Move cost
                 
+                # Compute new g score
                 temp_gScore_succ = self.g.get(current_state, float('inf')) + path_cost
+                # If it is better than the old one, update its g and f score
                 if temp_gScore_succ < self.g.get(succ_state, float('inf')):                    
                     cameFrom[succ_state] = (current_state, move)
                     self.g[succ_state] = temp_gScore_succ
                     self.f[succ_state] = temp_gScore_succ + self.heuristic.estimate(succ_state, game)
-                
+
+                    # Add to the set and heap if it is not existing
                     if succ_state not in openSet:                        
                         self.tracker.record_node()
                         openSet.add(succ_state)
@@ -372,7 +382,16 @@ class AStarSolver(Solver):
         
         return (False, [])
     
-    def _reconstruct_path(self, cameFrom: Dict[str, str], current_state: str):
+    def _reconstruct_path(self, cameFrom: Dict[str, str], current_state: str) -> List[str]:
+        """Retrieve the path from start to goal
+
+        Args:
+            cameFrom (Dict[str, str]): the previous state mapping
+            current_state (str): the current state
+
+        Returns:
+            List[str]: Moves from init to goal state
+        """
         moves = []
         while current_state in cameFrom.keys():
             previous_state, move = cameFrom[current_state]
@@ -391,16 +410,36 @@ class Heuristic(ABC):
 class ManhattanHeuristic(Heuristic):
     
     def _mahattan_dist(self, a: Tuple[int, int], b: Tuple[int, int]) -> int:
+        """Mahhatan distance calculator
+
+        Args:
+            a (Tuple[int, int]): the first position
+            b (Tuple[int, int]): the second position
+
+        Returns:
+            int: Mahhatan distance between a and b
+        """
         return abs(a[0] - b[0]) + abs(a[1] - b[1])
     
     def estimate(self, state: SokobanState, game: SokobanGame) -> float:
+        """Estimate the heuristic cost from state to goal
+
+        Args:
+            state (SokobanState): the current game state
+            game (SokobanGame): game setting
+
+        Returns:
+            float: heristic cost from current state to goal
+        """
         boxes = state.boxes
         goals = game.board.goals
         player = state.player
         
         h = 0.0
+        # Minimum step to push a box
         min_dist_player2box = min([self._mahattan_dist(player, box) for box in boxes])
         
+        # Min step to all boxes onto goals
         heuristic_dist_of_boxes2goals = 0.0
         for box in boxes:
             heuristic_dist_of_boxes2goals += min([self._mahattan_dist(box, goal) for goal in goals])
