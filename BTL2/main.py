@@ -3,13 +3,10 @@ import chess
 import time
 import random
 
+import utils
+
 if __name__ == "__main__":
     board = chess.Board()
-    print("Init game", board)
-    t = 20
-    while (t > 0):
-        move = random.choice(list(board.legal_moves))
-        board.push(move)
-        print("[INFO] Game state")
-        print(board)
-        t -= 1
+    print(board)
+    
+    # print(utils.get_piece(board, 0, 7))
