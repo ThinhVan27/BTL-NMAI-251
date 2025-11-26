@@ -8,6 +8,7 @@ from chess import Board, Move
 from agent import Agent
 from random_agent import RandomAgent
 from minimax_agent import MinimaxAgent
+from rl_agent import RLAgent
 
 def play(agent1: Agent, agent2: Agent, interval: float = 0, pgn: bool = False, verbose: bool = False):
     """Play a chess game with two agents - WHITE and BLACK respectively
@@ -68,6 +69,7 @@ def play(agent1: Agent, agent2: Agent, interval: float = 0, pgn: bool = False, v
     
     pgn_text = ""
     if pgn:
+        length = len(str(game))
         pgn_text = str(game).split('\n\n',1)[1]
             
     if outcome is not None:
@@ -78,21 +80,23 @@ def play(agent1: Agent, agent2: Agent, interval: float = 0, pgn: bool = False, v
         else:
             winner = "-1"
     
-    return (winner, pgn_text) if pgn else winner
+    return (winner, pgn_text, length) if pgn else winner
         
     
 
 if __name__ == "__main__":
     a1 = RandomAgent()
-    a2 = MinimaxAgent()
+    a2 = RLAgent()
+    a2.load("models/dqn_chess_550.pth")
     win = 0
     N = 1
     for i in range(N):
-        winner, _ = play(a1, a2, 0.1, True, False)
+        winner, pgn, len = play(a1, a2, 0.1, True, True)
         if winner == "0":
             win += 1
         print(f"[INFO] Complete game {i}.")
-        print(f"[INFO] PGNs: {_}")
+        print(f"[INFO] PGNs: {pgn}")
+        print(f"[INFO] Winner: {winner}, in: {len} steps.")
     
     print(f"[INFO] Minimax winrate: {win/N*100:.2f}%")
     

@@ -11,11 +11,12 @@ DEPTH = 2
 
 
 class MinimaxAgent(Agent):
-    def __init__(self):
+    def __init__(self, depth=DEPTH):
         super().__init__()
+        self.depth = depth
         
     def get_action(self, game_state: Board) -> Move:
-        return self._get_best_move(game_state)
+        return self._get_best_move(game_state, self.depth)
     
     def _get_best_move(self, game_state: Board, depth: int = DEPTH) -> Move:
         """Get the best move following Minimax Algorithm"""
@@ -86,4 +87,3 @@ class MinimaxAgent(Agent):
                     else:
                         score -= pieceScore[upper_piece] + pos_score
         return score
-                    
