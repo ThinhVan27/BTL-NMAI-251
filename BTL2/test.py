@@ -32,6 +32,8 @@ def play(agent1: Agent, agent2: Agent, interval: float = 0, pgn: bool = False, v
     
     node = game
     board = Board()
+    max_steps = 300
+    step_count = 0
     while True:
         # Agent1 moves
         time.sleep(interval)
@@ -58,7 +60,7 @@ def play(agent1: Agent, agent2: Agent, interval: float = 0, pgn: bool = False, v
             print("[ERROR] No valid move!")
             return
         
-        
+        step_count += 1
         node = node.add_variation(move)
         if verbose:
             print(board)
@@ -66,11 +68,16 @@ def play(agent1: Agent, agent2: Agent, interval: float = 0, pgn: bool = False, v
         if board.is_game_over():
             outcome = board.outcome()
             break
+        if step_count >= max_steps:
+            break
     
     pgn_text = ""
     if pgn:
-        length = len(str(game))
+        # length = len(str(game))
+        length = 0
         pgn_text = str(game).split('\n\n',1)[1]
+
+    winner = "-1"
             
     if outcome is not None:
         if outcome.winner == True:
@@ -85,14 +92,14 @@ def play(agent1: Agent, agent2: Agent, interval: float = 0, pgn: bool = False, v
     
 
 if __name__ == "__main__":
-    a1 = RandomAgent()
-    a2 = RLAgent()
-    a2.load("models/dqn_chess_550.pth")
+    a1 = RLAgent()
+    a2 = RandomAgent()
+    a1.load("models/chess_1000.pth")
     win = 0
-    N = 1
+    N = 50
     for i in range(N):
-        winner, pgn, len = play(a1, a2, 0.1, True, True)
-        if winner == "0":
+        winner, pgn, len = play(a1, a2, 0.0, True, False)
+        if winner == "1":
             win += 1
         print(f"[INFO] Complete game {i}.")
         print(f"[INFO] PGNs: {pgn}")

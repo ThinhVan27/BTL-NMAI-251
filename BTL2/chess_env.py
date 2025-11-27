@@ -8,20 +8,37 @@ class ChessEnv:
         self.action_space_size = 4096
         
         # Reward Config
+        # self.weights = {
+        #     'pawn': 1.0,
+        #     'knight': 3.0,
+        #     'bishop': 3.2,
+        #     'rook': 5.0,
+        #     'queen': 9.0,
+        #     # Drastically reduced positional noise. vs Random, only material matters.
+        #     'mobility': 0.001, 
+        #     'center': 0.01,
+        #     'pst_scale': 0.0, # Disable PST initially to focus on pure material capture
+        #     'step_penalty': -0.05, # Encourage faster wins
+        #     'check': 0.2,
+        #     'castling': 1.0, # Good practice
+        #     'king_safety': 0.1,
+        #     'repetition_penalty': -1.0 # Stronger penalty for stalling
+        # }
+
         self.weights = {
-            'pawn': 1,
-            'knight': 3,
-            'bishop': 3.2, # Slightly more valuable than knight usually
-            'rook': 5,
-            'queen': 9,
-            'mobility': 0.01,
-            'center': 0.05,
-            'pst_scale': 0.02,
-            'step_penalty': -0.01, # Increased penalty to encourage speed
-            'check': 0.1, # Bonus for putting opponent in check
-            'castling': 0.5, # Bonus for castling
-            'king_safety': 0.1, # Bonus for King safety
-            'repetition_penalty': -0.5 # Penalty for repeating positions
+            'pawn': 1.0,
+            'knight': 3.0,
+            'bishop': 3.2,
+            'rook': 5.0,
+            'queen': 9.0,
+            'king_safety': 0.0,      # Disable for now (noise)
+            'mobility': 0.0,         # Disable for now (noise)
+            'center': 0.0,           # Disable for now (noise)
+            'pst_scale': 0.0,        # Disable PST initially to focus on pure material capture
+            'step_penalty': -0.05,   # Small pressure to finish games
+            'check': 3.0,            # Helpful tactile feedback
+            'castling': 1.0,         # Good safe habit
+            'repetition_penalty': -5.0 
         }
         
         # Simple Piece-Square Tables (Pawn & Knight)
@@ -105,9 +122,12 @@ class ChessEnv:
         # Terminal Rewards (Override shaping for clear outcomes)
         if done:
             if self.board.is_checkmate():
-                reward += 10.0 # Win bonus (Increased)
-            else:
-                reward = 0.0 # Draw
+                # Massive reward for winning.
+                reward += 100.0 
+                # reward += 20.0
+            elif self.board.is_stalemate() or self.board.is_insufficient_material():
+                # Draw is better than losing, but worse than winning.
+                reward += 0.0
 
         return self.get_state(), reward, done, {"legal": True}
 
@@ -208,11 +228,19 @@ class ChessEnv:
         return from_square * 64 + to_square
 
     def decode_action(self, action_idx: int) -> chess.Move:
-        """Decodes an integer 0-4095 into a chess move."""
         from_square = action_idx // 64
         to_square = action_idx % 64
-        
         move = chess.Move(from_square, to_square)
+        
+        # --- FIX: Auto-promote to Queen ---
+        # Check if this is a pawn move to the last rank
+        piece = self.board.piece_at(from_square)
+        if piece and piece.piece_type == chess.PAWN:
+            rank = chess.square_rank(to_square)
+            if (piece.color == chess.WHITE and rank == 7) or \
+            (piece.color == chess.BLACK and rank == 0):
+                move.promotion = chess.QUEEN # Auto-promote
+                
         return move
 
     def get_legal_actions(self):
