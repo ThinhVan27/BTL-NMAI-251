@@ -5,6 +5,8 @@ import torch.optim as optim
 import numpy as np
 import random
 from collections import deque
+import torch
+from torch.amp import autocast, GradScaler
 from agent import Agent
 
 class ResidualBlock(nn.Module):
@@ -27,24 +29,24 @@ class DuelingDQN(nn.Module):
         super(DuelingDQN, self).__init__()
         self.input_shape = input_shape
         self.num_actions = num_actions
+
+        self.hidden_channels = 64
         
         # Initial Conv Layer
-        self.conv1 = nn.Conv2d(input_shape[0], 64, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm2d(64)
+        self.conv1 = nn.Conv2d(input_shape[0], self.hidden_channels, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(self.hidden_channels)
         
-        # Residual Towers (AlphaZero style, but smaller)
-        self.res1 = ResidualBlock(64)
-        self.res2 = ResidualBlock(64)
-        self.res3 = ResidualBlock(64)
-        self.res4 = ResidualBlock(64)
+        self.res_blocks = nn.ModuleList([
+            ResidualBlock(self.hidden_channels) for _ in range(6)
+        ])
         
-        flat_size = 64 * 8 * 8
+        flat_size = self.hidden_channels * 8 * 8
         
         # Value Stream (Evaluates the board state)
         self.value_fc = nn.Sequential(
-            nn.Linear(flat_size, 512),
+            nn.Linear(flat_size, 1024),
             nn.ReLU(),
-            nn.Linear(512, 1)
+            nn.Linear(1024, 1)
         )
         
         # Advantage Stream (Evaluates each specific action)
@@ -56,10 +58,9 @@ class DuelingDQN(nn.Module):
         
     def forward(self, x):
         x = torch.relu(self.bn1(self.conv1(x)))
-        x = self.res1(x)
-        x = self.res2(x)
-        x = self.res3(x)
-        x = self.res4(x)
+
+        for block in self.res_blocks:
+          x = block(x)
         
         x = x.view(x.size(0), -1)
         
@@ -84,14 +85,15 @@ class RLAgent(Agent):
         
         # Lower LR for stability with ResNet
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=1e-4)
-        self.memory = deque(maxlen=20000) # Increased memory
+        self.memory = deque(maxlen=100000) # Increased memory
         
-        self.batch_size = 64 # Increased batch size
+        self.batch_size = 512 # Increased batch size
         self.gamma = 0.99
         self.epsilon = 1.0
         self.epsilon_min = 0.05
         # Faster decay initially to exploit learned behavior sooner
         self.epsilon_decay = 0.9995 
+        self.scaler = torch.GradScaler()
         
     def get_action(self, game_state, legal_moves_indices=None):
         is_inference = False
@@ -140,22 +142,21 @@ class RLAgent(Agent):
         next_state = torch.FloatTensor(np.array(next_state)).to(self.device)
         done = torch.FloatTensor(done).unsqueeze(1).to(self.device)
         
-        # Double DQN Logic
-        # 1. Select best action using Policy Net
-        next_actions = self.policy_net(next_state).argmax(1, keepdim=True)
-        # 2. Evaluate that action using Target Net
-        next_q_values = self.target_net(next_state).gather(1, next_actions)
+        with torch.autocast(device_type='cuda', dtype=torch.float16):
+          # Double DQN Logic
+          with torch.no_grad():
+            next_actions = self.policy_net(next_state).argmax(1, keepdim=True)
+            next_q_values = self.target_net(next_state).gather(1, next_actions)
+            expected_q_values = reward + (1 - done) * self.gamma * next_q_values
+          q_values = self.policy_net(state).gather(1, action)
+          loss = nn.MSELoss()(q_values, expected_q_values)
         
-        expected_q_values = reward + (1 - done) * self.gamma * next_q_values
-        q_values = self.policy_net(state).gather(1, action)
-        
-        loss = nn.MSELoss()(q_values, expected_q_values)
-        
-        self.optimizer.zero_grad()
-        loss.backward()
-        # Gradient clipping to prevent explosion
+        # self.optimizer.zero_grad()
+        self.scaler.scale(loss).backward()
+        self.scaler.unscale_(self.optimizer) # Unscale before clipping
         torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), 1.0)
-        self.optimizer.step()
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
         
 
     def decay_epsilon(self):
@@ -174,7 +175,7 @@ class RLAgent(Agent):
     def load(self, path, training=False):
         self.policy_net.load_state_dict(torch.load(path, map_location=self.device))
         self.target_net.load_state_dict(self.policy_net.state_dict())
-        self.epsilon = 0.5 if training else 0.0
+        self.epsilon = 0.25 if training else 0.0
         if training: self.policy_net.train()
         else: self.policy_net.eval()
 

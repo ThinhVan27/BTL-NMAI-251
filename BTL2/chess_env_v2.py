@@ -35,10 +35,13 @@ class ChessEnv:
             'mobility': 0.0,         # Disable for now (noise)
             'center': 0.0,           # Disable for now (noise)
             'pst_scale': 0.0,        # Disable PST initially to focus on pure material capture
-            'step_penalty': -0.05,   # Small pressure to finish games
-            'check': 1.0,            # Helpful tactile feedback
+            'step_penalty': -0.2,   # Small pressure to finish games
+            'check': 0.05,            # Helpful tactile feedback
             'castling': 1.0,         # Good safe habit
-            'repetition_penalty': -2.0 
+            'repetition_penalty': -3.0,
+            'promotion': 5.0,
+            # 'max_step_reached_penalty': -30.0,
+            'pressure': 0.1
         }
         
         # Simple Piece-Square Tables (Pawn & Knight)
@@ -65,11 +68,42 @@ class ChessEnv:
         ]
 
     def reset(self):
-        self.board.reset()
+        if np.random.random() < 0.2:
+            self._setup_random_endgame()
+        else:
+            self.board.reset()
         return self.get_state()
 
+    def _setup_random_endgame(self):
+        """Sets up a random K+Q vs k endgame position."""
+        self.board.clear()
+
+        while True:
+            white_king_sq = np.random.randint(0, 64)
+            black_king_sq = np.random.randint(0, 64)
+            
+            if white_king_sq != black_king_sq and \
+                chess.square_distance(white_king_sq, black_king_sq) > 1:
+                
+                self.board.set_piece_at(white_king_sq, chess.Piece(chess.KING, chess.WHITE))
+                self.board.set_piece_at(black_king_sq, chess.Piece(chess.KING, chess.BLACK))
+                break
+        
+        while True:
+            queen_sq = np.random.randint(0, 64)
+            if self.board.piece_at(queen_sq) is None:
+                self.board.set_piece_at(queen_sq, chess.Piece(chess.QUEEN, chess.WHITE))
+                break
+
+        self.board.turn = chess.WHITE
+
+        if self.board.is_game_over():
+            self.board._setup_random_endgame()
+                
+        
+
     def step(self, action_idx):
-        move = self.decode_action(action_idx)
+        move, promoted = self.decode_action(action_idx)
         if move not in self.board.legal_moves:
             return self.get_state(), -10.0, True, {"legal": False} # Penalty for illegal
 
@@ -123,11 +157,11 @@ class ChessEnv:
         if done:
             if self.board.is_checkmate():
                 # Massive reward for winning.
-                reward += 100.0 
+                reward += 200.0 
                 # reward += 20.0
             elif self.board.is_stalemate() or self.board.is_insufficient_material():
                 # Draw is better than losing, but worse than winning.
-                reward += 0.0
+                reward += -200.0
 
         return self.get_state(), reward, done, {"legal": True}
 
@@ -190,6 +224,36 @@ class ChessEnv:
             score += mobility_score
         else:
             score -= mobility_score
+
+        if board.turn == chess.WHITE:
+            opp_king_sq = board.king(chess.BLACK)
+        else:
+            opp_king_sq = board.king(chess.WHITE)
+
+        if opp_king_sq:
+            # Convert square 0-63 to rank/file
+            opp_rank = chess.square_rank(opp_king_sq)
+            opp_file = chess.square_file(opp_king_sq)
+            
+            dist_from_center = max(abs(opp_rank - 3.5), abs(opp_file - 3.5))
+
+            pressure_score = dist_from_center * self.weights['pressure']
+
+            white_mat = sum(1 for _ in board.pieces(chess.PAWN, chess.WHITE)) + \
+                        sum(2 for _ in board.pieces(chess.KNIGHT, chess.WHITE)) + \
+                        sum(3 for _ in board.pieces(chess.BISHOP, chess.WHITE)) + \
+                        sum(5 for _ in board.pieces(chess.ROOK, chess.WHITE)) + \
+                        sum(9 for _ in board.pieces(chess.QUEEN, chess.WHITE))
+            black_mat = sum(1 for _ in board.pieces(chess.PAWN, chess.BLACK)) + \
+                        sum(2 for _ in board.pieces(chess.KNIGHT, chess.BLACK)) + \
+                        sum(3 for _ in board.pieces(chess.BISHOP, chess.BLACK)) + \
+                        sum(5 for _ in board.pieces(chess.ROOK, chess.BLACK)) + \
+                        sum(9 for _ in board.pieces(chess.QUEEN, chess.BLACK))
+
+            if white_mat > black_mat:
+                score += pressure_score
+            elif black_mat > white_mat:
+                score -= pressure_score
             
         return score
 
@@ -234,14 +298,16 @@ class ChessEnv:
         
         # --- FIX: Auto-promote to Queen ---
         # Check if this is a pawn move to the last rank
+        promoted = False
         piece = self.board.piece_at(from_square)
         if piece and piece.piece_type == chess.PAWN:
             rank = chess.square_rank(to_square)
             if (piece.color == chess.WHITE and rank == 7) or \
             (piece.color == chess.BLACK and rank == 0):
                 move.promotion = chess.QUEEN # Auto-promote
+                promoted = True
                 
-        return move
+        return move, promoted
 
     def get_legal_actions(self):
         """Returns list of legal action indices."""
