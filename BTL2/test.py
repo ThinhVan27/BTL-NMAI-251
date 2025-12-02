@@ -88,11 +88,11 @@ if __name__ == "__main__":
     win = 0
     N = 1
     for i in range(N):
-        winner, _ = play(a1, a2, 0.1, True, False)
+        winner= play(a1, a2, 0.1)
         if winner == "0":
             win += 1
-        print(f"[INFO] Complete game {i}.")
-        print(f"[INFO] PGNs: {_}")
+        print(f"[INFO] Complete game {i}")
+        # print(f"[INFO] PGNs: {_}")
     
     print(f"[INFO] Minimax winrate: {win/N*100:.2f}%")
     
