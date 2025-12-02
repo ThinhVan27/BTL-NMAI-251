@@ -47,7 +47,7 @@ def play(agent1: Agent, agent2: Agent, interval: float = 0, pgn: bool = False, v
         node = node.add_variation(move)
         if verbose:
             print(board)
-            print("="*50)
+            print("-"*50)
         if board.is_game_over():
             outcome = board.outcome()
             break
@@ -65,7 +65,7 @@ def play(agent1: Agent, agent2: Agent, interval: float = 0, pgn: bool = False, v
         node = node.add_variation(move)
         if verbose:
             print(board)
-            print("="*50)
+            print("-"*50)
             if save:
                 with open("results.txt", "a") as f:
                     f.write(f'{board}\n{"="*50}\n')
@@ -76,10 +76,11 @@ def play(agent1: Agent, agent2: Agent, interval: float = 0, pgn: bool = False, v
             break
     
     pgn_text = ""
+    length = step_count
     if pgn:
         # length = len(str(game))
-        length = 0
         pgn_text = str(game).split('\n\n',1)[1]
+        length = len(pgn_text)
 
     winner = "-1"
             
@@ -91,7 +92,7 @@ def play(agent1: Agent, agent2: Agent, interval: float = 0, pgn: bool = False, v
         else:
             winner = "-1"
     
-    return (winner, pgn_text, length) if pgn else winner
+    return (winner, pgn_text, length)
         
 parser = argparse.ArgumentParser()
 parser.add_argument("--path", type=str, default="models/chess_2000.pth")
@@ -103,9 +104,24 @@ parser.add_argument("--save", action="store_true")
 args = parser.parse_args()
 
 if __name__ == "__main__":
-    a1 = RLAgent()
+    a1 = MinimaxAgent()
     a2 = RandomAgent()
-    a1.load(args.path)
+    
+    
+    name1 = a1.__class__.__name__
+    name2 = a2.__class__.__name__
+    
+    print("*"*50)
+    print(f"Game Play: {name1} vs {name2}")
+    print("*"*50)
+
+
+    if isinstance(a1, RLAgent):
+        a1.load(args.path)
+    
+    if isinstance(a2, RLAgent):
+        a2.load(args.path)
+        
     win = 0
     N = args.N
     for i in range(N):
@@ -114,11 +130,14 @@ if __name__ == "__main__":
             win += 1
         print(f"[INFO] Complete game {i}.")
         print(f"[INFO] PGNs: {pgn}")
-        print(f"[INFO] Winner: {winner}, in: {len} steps.")
+        print(f"[INFO] Winner: {name1}, in: {len} steps.")
+        print("=" * 50)
     
     if args.save:
         with open("results.txt", "a") as f:
             f.write(f"PGNs: {pgn}\n ")
-    print(f"[INFO] Minimax winrate: {win/N*100:.2f}%")
+    
+        
+    print(f"[INFO] {name1} winrate: {win/N*100:.2f}%")
     
     # print(chess.__file__)
