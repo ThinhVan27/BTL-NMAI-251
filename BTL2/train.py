@@ -68,6 +68,13 @@ def train(args):
     if not os.path.exists("models"): os.makedirs("models")
     
     for episode in range(episode, episodes):
+        try:
+            pass
+        except KeyboardInterrupt:
+            print(f"\nTraining interrupted. Saving model at episode {episode}...")
+            agent.save(f"models/rl_model_{episode}.pth")
+            break
+
         state = env.reset()
         done = False
         max_steps = 200 # Games vs Random shouldn't take forever

@@ -4,13 +4,14 @@ import time
 import chess
 import chess.pgn
 from chess import Board, Move
+import argparse
 
 from agent import Agent
 from random_agent import RandomAgent
 from minimax_agent import MinimaxAgent
-from rl_agent import RLAgent
+from rl_agent_big import RLAgent
 
-def play(agent1: Agent, agent2: Agent, interval: float = 0, pgn: bool = False, verbose: bool = False):
+def play(agent1: Agent, agent2: Agent, interval: float = 0, pgn: bool = False, verbose: bool = False, save: bool = False):
     """Play a chess game with two agents - WHITE and BLACK respectively
     
     Parameters:
@@ -65,6 +66,9 @@ def play(agent1: Agent, agent2: Agent, interval: float = 0, pgn: bool = False, v
         if verbose:
             print(board)
             print("="*50)
+            if save:
+                with open("results.txt", "a") as f:
+                    f.write(f'{board}\n{"="*50}\n')
         if board.is_game_over():
             outcome = board.outcome()
             break
@@ -89,22 +93,32 @@ def play(agent1: Agent, agent2: Agent, interval: float = 0, pgn: bool = False, v
     
     return (winner, pgn_text, length) if pgn else winner
         
-    
+parser = argparse.ArgumentParser()
+parser.add_argument("--path", type=str, default="models/chess_2000.pth")
+parser.add_argument("--interval", type=float, default=0.0)
+parser.add_argument("--pgn", action="store_true")
+parser.add_argument("--verbose", action="store_true")
+parser.add_argument("--N", type=int, default=50)
+parser.add_argument("--save", action="store_true")
+args = parser.parse_args()
 
 if __name__ == "__main__":
     a1 = RLAgent()
     a2 = RandomAgent()
-    a1.load("models/chess_1000.pth")
+    a1.load(args.path)
     win = 0
-    N = 50
+    N = args.N
     for i in range(N):
-        winner, pgn, len = play(a1, a2, 0.0, True, False)
+        winner, pgn, len = play(a1, a2, args.interval, args.pgn, args.verbose, args.save)
         if winner == "1":
             win += 1
         print(f"[INFO] Complete game {i}.")
         print(f"[INFO] PGNs: {pgn}")
         print(f"[INFO] Winner: {winner}, in: {len} steps.")
     
+    if args.save:
+        with open("results.txt", "a") as f:
+            f.write(f"PGNs: {pgn}\n ")
     print(f"[INFO] Minimax winrate: {win/N*100:.2f}%")
     
     # print(chess.__file__)
