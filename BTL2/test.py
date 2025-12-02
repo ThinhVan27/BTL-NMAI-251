@@ -126,11 +126,16 @@ if __name__ == "__main__":
     N = args.N
     for i in range(N):
         winner, pgn, len = play(a1, a2, args.interval, args.pgn, args.verbose, args.save)
-        if winner == "1":
-            win += 1
+        
         print(f"[INFO] Complete game {i}.")
         print(f"[INFO] PGNs: {pgn}")
-        print(f"[INFO] Winner: {name1}, in: {len} steps.")
+        if winner == "1":
+            win += 1
+            print(f"[INFO] Winner: {name1}, in: {len} steps.")
+        elif winner == "0":
+            print(f"[INFO] Winner: {name2}, in: {len} steps.")
+        elif winner == "-1":
+            print(f"DRAW! in {len} steps.")
         print("=" * 50)
     
     if args.save:
