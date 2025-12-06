@@ -17,6 +17,10 @@ class MinimaxAgent(Agent):
         
     def get_action(self, game_state: Board) -> Move:
         return self._get_best_move(game_state, self.depth)
+
+    def get_best_move(self, game_state: Board) -> Move:
+        """Public helper to match the teacher API used by distillation scripts."""
+        return self._get_best_move(game_state, self.depth)
     
     def _get_best_move(self, game_state: Board, depth: int = DEPTH) -> Move:
         """Get the best move following Minimax Algorithm"""
@@ -87,3 +91,11 @@ class MinimaxAgent(Agent):
                     else:
                         score -= pieceScore[upper_piece] + pos_score
         return score
+
+
+def get_best_move(board: Board, depth: int = DEPTH) -> Move:
+    """
+    Convenience functional API for teacher mode. Mirrors MinimaxAgent.get_best_move.
+    """
+    agent = MinimaxAgent(depth=depth)
+    return agent.get_best_move(board)

@@ -1,385 +1,383 @@
-# Monte Carlo Value Network Chess Agent — Implementation Plan (Markdown Spec)
+# Chess Agent – ML‑Guided Search (Policy + Minimax) Plan
 
-This document defines the full implementation plan to upgrade your existing chess RL codebase into a **Monte Carlo value-learning agent with 1-ply lookahead**, capable of defeating a random agent with >60% win rate on limited computation (Colab/Kaggle).
+This document describes how to build the **final assignment agent** using a combination of:
 
-It replaces the old DQN-style agent with a simpler and more stable training loop based on final game outcomes (Monte Carlo returns). The following files will be modified or extended:
+* A **neural policy network** (ML component), and
+* A **classical minimax / negamax search** (existing strong engine),
 
-* `agent.py`
-* `chess_env_v2.py` (unchanged)
-* `random_agent.py` (unchanged)
-* `rl_agent_big.py` (new agent + value network)
-* `train_local.ipynb` (new training loop)
+such that the final agent reliably beats a **random agent ≥ 60%** of the time.
 
----
-
-# 1. Overview of New Architecture
-
-We introduce a new agent that uses:
-
-### **1. Value Network `V(s)`**
-
-A CNN that takes a state tensor `[13, 8, 8]` and outputs a scalar in `[-1, 1]` representing win probability from the side-to-move’s perspective.
-
-### **2. 1-Ply Lookahead Move Selection**
-
-For each legal move:
-
-1. Apply the move → next state `s'`
-2. Compute `V(s')`
-3. Select the move with highest predicted value (`argmax V`), with optional ε-greedy exploration.
-
-### **3. Training via Monte Carlo Returns**
-
-For each self-play game vs the RandomAgent:
-
-* At the end of game, compute outcome:
-
-  * Win → `z = +1`
-  * Draw or max-step → `z = 0`
-  * Loss → `z = -1`
-* For **every state where our agent moved**, store `(state_tensor_13, z)` into the replay buffer.
-* Train the value network using **MSE(V(s), z)**.
-
-This avoids Q-learning instability and drastically reduces complexity.
+Codex should use this as a **design + implementation checklist** to integrate the hybrid agent into the existing codebase.
 
 ---
 
-# 2. Board Encoding (New Function)
+## 1. High‑Level Idea
 
-Add a new helper in `rl_agent_big.py`:
+We already have:
 
-### **`board_to_tensor_13(board)`**
+* A **minimax agent** that beats random ≈ 90% → strong teacher.
+* A **policy network** trained via imitation learning from minimax (behavior cloning), but as a standalone policy it only achieves ≈ 23% winrate vs random.
 
-Returns a `float32` numpy array of shape `[13, 8, 8]`.
+Instead of using the neural policy alone, we will:
 
-* Channels 0–5: white pieces (P, N, B, R, Q, K)
-* Channels 6–11: black pieces (P, N, B, R, Q, K)
-* Channel 12: side-to-move plane
+> Use the **policy net as a move prior** to **guide** minimax search: at each node, the policy ranks legal moves, and the search only explores the **top‑k** moves.
 
-  * all ones if White to move
-  * all zeros if Black to move
+This is similar in spirit to AlphaZero:
 
-This function replaces usage of the old `_board_to_tensor()` from `RLAgent`.
+* **Neural network** → suggests which moves are promising.
+* **Tree search (minimax/negamax)** → does deeper lookahead using a static evaluation function.
+
+This hybrid agent remains **strong** (close to the original minimax) but:
+
+* Uses **ML** in a critical way (move ordering and pruning),
+* Is explainable and easy to present in the report.
 
 ---
 
-# 3. Value Network (New Model)
+## 2. Existing Components to Reuse
 
-Add this to `rl_agent_big.py`, below the existing models:
+### 2.1. Environment / Representation
+
+From `chess_env_v2.py`:
+
+* `ChessEnv` with:
+
+  * `board` (chess.Board)
+  * `get_state()` → `(13, 8, 8)` tensor
+  * `encode_action(move)` → `int` in `[0, 4095]`
+  * `decode_action(idx)` → `chess.Move`
+  * `get_legal_actions()` → list of legal action indices
+
+### 2.2. Agents
+
+From existing modules:
+
+* `RandomAgent` (random_agent.py):
+
+  * Picks a random legal move from the current board.
+
+* `MinimaxAgent` (or equivalent):
+
+  * Exposes something like: `get_best_move(board: chess.Board) -> chess.Move`
+  * Uses **classical minimax/negamax + static evaluation**.
+  * This is currently ≈ 90% winrate vs random.
+
+Codex must ensure there is a **clean, reusable MinimaxAgent** class in a file like `minimax_agent.py`.
+
+### 2.3. Policy Network (Student)
+
+From the distillation work:
+
+* `PolicyNet` (e.g. in `policy_net.py`):
+
+  * Input: `(13, 8, 8)` board state.
+  * Output: `(4096,)` logits over all possible moves.
+  * Trained via cross-entropy on `(state, teacher_action_idx)` pairs from minimax vs random games.
+
+Weights are stored as `models/policy_supervised.pth`.
+
+Codex should be able to:
 
 ```python
-class ValueNet(nn.Module):
-    def __init__(self, in_channels=13, channels=64):
-        super().__init__()
-        self.conv_in = nn.Sequential(
-            nn.Conv2d(in_channels, channels, 3, padding=1),
-            nn.BatchNorm2d(channels),
-            nn.ReLU(inplace=True),
-        )
-        self.block1 = nn.Sequential(
-            nn.Conv2d(channels, channels, 3, padding=1),
-            nn.BatchNorm2d(channels),
-            nn.ReLU(inplace=True)
-        )
-        self.block2 = nn.Sequential(
-            nn.Conv2d(channels, channels, 3, padding=1),
-            nn.BatchNorm2d(channels),
-            nn.ReLU(inplace=True)
-        )
-        self.value_head = nn.Sequential(
-            nn.Conv2d(channels, 32, 1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
-            nn.Flatten(),
-            nn.Linear(32 * 8 * 8, 128),
-            nn.ReLU(inplace=True),
-            nn.Linear(128, 1),
-            nn.Tanh()
-        )
-
-    def forward(self, x):
-        x = self.conv_in(x)
-        x = self.block1(x) + x
-        x = self.block2(x) + x
-        v = self.value_head(x)
-        return v.squeeze(-1)
+policy = PolicyNet(input_shape=(13, 8, 8), num_actions=4096)
+policy.load_state_dict(torch.load("models/policy_supervised.pth", map_location=device))
+policy.to(device).eval()
 ```
 
 ---
 
-# 4. New Agent Class: MonteCarloValueAgent
+## 3. New Component: ML‑Guided Minimax Agent
 
-Add this in `rl_agent_big.py`:
-
-### **Class Responsibilities**
-
-* Manage replay buffer
-* Compute epsilon schedule
-* Choose moves via 1-ply lookahead
-* Run gradient updates on the value network
-* Save/load model
-
----
-
-### **4.1. Constructor**
+Create a new agent class, e.g. in `ml_guided_minimax_agent.py`:
 
 ```python
-class MonteCarloValueAgent(Agent):
-    def __init__(self,
-                 epsilon_start=0.3,
-                 epsilon_end=0.05,
-                 epsilon_decay_episodes=1500,
-                 lr=1e-3,
-                 replay_size=50000,
-                 batch_size=256):
-        super().__init__()
+from agent import Agent
+from chess_env_v2 import ChessEnv
+from policy_net import PolicyNet
+from minimax_agent import MinimaxEvaluator  # factor out evaluation if needed
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = ValueNet().to(self.device)
-        self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
-        self.loss_fn = nn.MSELoss()
+class MLGuidedMinimaxAgent(Agent):
+    def __init__(self, policy, depth=3, top_k=6, device="cuda"):
+        ...
 
-        self.epsilon_start = epsilon_start
-        self.epsilon_end   = epsilon_end
-        self.epsilon_decay_episodes = epsilon_decay_episodes
-        self.batch_size = batch_size
-
-        self.replay_states  = []
-        self.replay_targets = []
-        self.replay_size    = replay_size
+    def get_action(self, game_state: chess.Board) -> chess.Move:
+        ...
 ```
 
-### **4.2. Epsilon schedule**
+### 3.1. Design
+
+**Core idea:**
+
+1. At the root (and optionally at deeper nodes), use the **policy net** to score all legal moves.
+2. Select the **top‑k** moves according to these scores.
+3. Run **minimax / negamax search** only over these top‑k moves up to a fixed depth `D`.
+4. Return the move with the best minimax value.
+
+This gives us:
+
+* **Lower branching factor** due to policy pruning.
+* **Stronger play** than pure policy because we still look ahead.
+* **Practical speed** because `k` is small (e.g. 4–8), and depth can be modest (e.g. 2–3).
+
+### 3.2. Policy Scoring Function
+
+Implement a helper to convert a `chess.Board` into policy scores for moves:
 
 ```python
-    def epsilon_for_episode(self, episode):
-        t = min(1.0, episode / self.epsilon_decay_episodes)
-        return self.epsilon_start + (self.epsilon_end - self.epsilon_start) * t
+def policy_scores_for_board(policy, env: ChessEnv, board: chess.Board, device) -> dict[Move, float]:
+    env.board = board
+    state = env.get_state()
+    state_t = torch.from_numpy(state).unsqueeze(0).to(device)
+    with torch.no_grad():
+        logits = policy(state_t)[0]  # (4096,)
+
+    legal_idxs = env.get_legal_actions()
+    # mask illegal moves
+    mask = torch.full((policy.num_actions,), float('-inf'), device=device)
+    mask[legal_idxs] = 0.0
+    masked_logits = logits + mask
+
+    # convert back to per-move dictionary
+    scores = {}
+    for idx in legal_idxs:
+        move = env.decode_action(idx)
+        scores[move] = masked_logits[idx].item()
+    return scores
 ```
 
----
+### 3.3. Minimax / Negamax with Policy‑Guided Move Ordering
 
-### **4.3. Move Selection (1-Ply Lookahead)**
+Refactor the existing minimax implementation so that:
+
+* There is a **pure evaluator** for leaf nodes (e.g. `evaluate(board) -> float`, based on material + heuristics).
+* The search itself can accept a move ordering strategy.
+
+Then, in `MLGuidedMinimaxAgent`, implement something like:
 
 ```python
-    def choose_move(self, board, epsilon=0.1):
-        legal_moves = list(board.legal_moves)
+def _negamax(self, board, depth, alpha, beta, color_sign):
+    if depth == 0 or board.is_game_over(claim_draw=True):
+        return color_sign * self.evaluator.evaluate(board)
+
+    # get policy scores and sort moves by descending score
+    scores = policy_scores_for_board(self.policy, self.env, board, self.device)
+    ordered_moves = sorted(scores.keys(), key=lambda m: scores[m], reverse=True)
+
+    # restrict to top-k moves
+    ordered_moves = ordered_moves[: self.top_k]
+
+    best_value = -1e9
+    for move in ordered_moves:
+        board.push(move)
+        val = -self._negamax(board, depth-1, -beta, -alpha, -color_sign)
+        board.pop()
+
+        if val > best_value:
+            best_value = val
+        if best_value > alpha:
+            alpha = best_value
+        if alpha >= beta:
+            break
+
+    return best_value
+```
+
+At the root in `get_action`:
+
+```python
+def get_action(self, game_state: chess.Board) -> chess.Move:
+    board = game_state.copy()
+    color_sign = 1 if board.turn == chess.WHITE else -1
+
+    # compute policy scores once at root
+    scores = policy_scores_for_board(self.policy, self.env, board, self.device)
+    ordered_moves = sorted(scores.keys(), key=lambda m: scores[m], reverse=True)
+    ordered_moves = ordered_moves[: self.top_k]
+
+    best_move = None
+    best_value = -1e9
+    alpha, beta = -1e9, 1e9
+
+    for move in ordered_moves:
+        board.push(move)
+        val = -self._negamax(board, self.depth-1, -beta, -alpha, -color_sign)
+        board.pop()
+
+        if val > best_value:
+            best_value = val
+            best_move = move
+        if val > alpha:
+            alpha = val
+
+    # fallback in degenerate cases
+    if best_move is None:
+        legal_moves = list(game_state.legal_moves)
         if not legal_moves:
             return None
+        best_move = random.choice(legal_moves)
 
-        if random.random() < epsilon:
-            return random.choice(legal_moves)
-
-        next_states = []
-        for move in legal_moves:
-            b = board.copy()
-            b.push(move)
-            next_states.append(board_to_tensor_13(b))
-
-        with torch.no_grad():
-            batch = torch.FloatTensor(np.stack(next_states)).to(self.device)
-            values = self.model(batch).cpu().numpy()
-
-        best_idx = int(np.argmax(values))
-        return legal_moves[best_idx]
+    return best_move
 ```
+
+**Key points:**
+
+* `self.evaluator.evaluate(board)` can use the existing classical evaluation from the current minimax implementation.
+* ML is used to **order and prune moves**; evaluation remains deterministic and fast.
 
 ---
 
-### **4.4. Replay Buffer Add**
+## 4. Evaluation Script: ML‑Guided vs Random
+
+Create `eval_ml_guided_vs_random.py` to compare:
+
+1. `RandomAgent` vs `RandomAgent` (sanity) → ~50%.
+2. `MinimaxAgent` vs `RandomAgent` → baseline (≈ 0.9 winrate).
+3. `MLGuidedMinimaxAgent` vs `RandomAgent` → **target metric**.
+
+Pseudocode:
 
 ```python
-    def add_episode_samples(self, states_list, z):
-        for s in states_list:
-            self.replay_states.append(s)
-            self.replay_targets.append(z)
-
-        if len(self.replay_states) > self.replay_size:
-            self.replay_states  = self.replay_states[-self.replay_size:]
-            self.replay_targets = self.replay_targets[-self.replay_size:]
-```
-
----
-
-### **4.5. Train Step**
-
-```python
-    def train_step(self):
-        if len(self.replay_states) < self.batch_size:
-            return None
-
-        idxs = np.random.choice(len(self.replay_states), self.batch_size, replace=False)
-        batch_states  = np.stack([self.replay_states[i]  for i in idxs])
-        batch_targets = np.array([self.replay_targets[i] for i in idxs], dtype=np.float32)
-
-        states_tensor  = torch.FloatTensor(batch_states).to(self.device)
-        targets_tensor = torch.FloatTensor(batch_targets).to(self.device)
-
-        self.model.train()
-        self.optimizer.zero_grad()
-        preds = self.model(states_tensor)
-        loss = self.loss_fn(preds, targets_tensor)
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-        self.optimizer.step()
-        return loss.item()
-```
-
----
-
-### **4.6. Save/Load**
-
-```python
-    def save(self, path):
-        torch.save(self.model.state_dict(), path)
-
-    def load(self, path):
-        self.model.load_state_dict(torch.load(path, map_location=self.device))
-        self.model.to(self.device).eval()
-```
-
----
-
-# 5. Game Runner Function (Self-Play vs RandomAgent)
-
-Add this in `rl_agent_big.py` or a new utils file:
-
-```python
-def play_game_value_vs_random(value_agent,
-                              random_agent,
-                              max_moves=100,
-                              epsilon=0.1,
-                              agent_plays_white=True):
-
+def play_match(agent_white, agent_black, max_moves=200) -> int:
     board = chess.Board()
-    states_list = []
+    env = ChessEnv()
+    env.board = board
+
     moves = 0
-    agent_color = chess.WHITE if agent_plays_white else chess.BLACK
-
     while not board.is_game_over(claim_draw=True) and moves < max_moves:
-        if board.turn == agent_color:
-            states_list.append(board_to_tensor_13(board))
-            move = value_agent.choose_move(board, epsilon=epsilon)
+        if board.turn == chess.WHITE:
+            move = agent_white.get_action(board)
         else:
-            move = random_agent.get_action(board)
-
-        if move is None:
+            move = agent_black.get_action(board)
+        if move is None or move not in board.legal_moves:
             break
         board.push(move)
         moves += 1
 
     outcome = board.outcome(claim_draw=True)
-    if outcome is None:
-        z = 0.0
-    else:
-        if outcome.winner is None:
-            z = 0.0
-        elif outcome.winner == agent_color:
-            z = 1.0
+    if outcome is None or outcome.winner is None:
+        return 0   # draw
+    return 1 if outcome.winner == chess.WHITE else -1
+```
+
+Then:
+
+```python
+def eval_agent_vs_random(agent_factory, n_games=100, max_moves=200):
+    wins = draws = losses = 0
+    for i in range(n_games):
+        random_agent = RandomAgent()
+        if i % 2 == 0:
+            # agent as White
+            agent = agent_factory()
+            res = play_match(agent, random_agent, max_moves)
         else:
-            z = -1.0
+            # agent as Black
+            agent = agent_factory()
+            res = play_match(random_agent, agent, max_moves)
+            res *= -1  # flip perspective so +1 means agent win
 
-    if moves >= max_moves and outcome is None:
-        z = 0.0
+        if res > 0:
+            wins += 1
+        elif res < 0:
+            losses += 1
+        else:
+            draws += 1
 
-    return states_list, z
+    winrate = wins / n_games
+    print(f"[RESULT] Agent vs random over {n_games} games: winrate={winrate:.3f} (W/D/L={wins}/{draws}/{losses})")
+    return winrate
 ```
 
----
-
-# 6. Modify `train_local.ipynb` — New Training Loop
-
-### **6.1. Import and instantiate**
+Usage for ML‑guided agent:
 
 ```python
-from rl_agent_big import MonteCarloValueAgent, play_game_value_vs_random
-from random_agent import RandomAgent
+def make_ml_guided_agent():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    policy = PolicyNet(input_shape=(13, 8, 8), num_actions=4096)
+    policy.load_state_dict(torch.load("models/policy_supervised.pth", map_location=device))
+    policy.to(device).eval()
+    return MLGuidedMinimaxAgent(policy=policy, depth=3, top_k=6, device=device)
 
-value_agent = MonteCarloValueAgent()
-random_agent = RandomAgent()
+winrate = eval_agent_vs_random(make_ml_guided_agent, n_games=100)
 ```
 
----
-
-### **6.2. Main Training Loop**
-
-```python
-num_episodes = 3000
-eval_every = 200
-eval_games = 200
-win_history = []
-
-for episode in range(1, num_episodes+1):
-    epsilon = value_agent.epsilon_for_episode(episode)
-    agent_white = (episode % 2 == 1)
-
-    states, z = play_game_value_vs_random(
-        value_agent,
-        random_agent,
-        max_moves=100,
-        epsilon=epsilon,
-        agent_plays_white=agent_white
-    )
-
-    if states:
-        value_agent.add_episode_samples(states, z)
-
-    loss = value_agent.train_step()
-
-    if episode % eval_every == 0:
-        wins = draws = losses = 0
-        for _ in range(eval_games):
-            s_eval, z_eval = play_game_value_vs_random(
-                value_agent,
-                random_agent,
-                max_moves=100,
-                epsilon=0.0,
-                agent_plays_white=True
-            )
-            if z_eval > 0: wins += 1
-            elif z_eval < 0: losses += 1
-            else: draws += 1
-
-        win_rate = wins / eval_games
-        win_history.append(win_rate)
-        print(f"Episode {episode} — WinRate={win_rate:.3f}  W/D/L={wins}/{draws}/{losses}")
-
-        if win_rate >= 0.60:
-            value_agent.save("value_agent_60pct.pth")
-```
+The assignment target is **winrate ≥ 0.60**.
 
 ---
 
-# 7. Optional: Plot Learning Curve
+## 5. Reporting / Write‑up Guidance
 
-```python
-plt.plot(np.arange(len(win_history)) * eval_every, win_history)
-plt.xlabel("Episode")
-plt.ylabel("Win Rate vs Random")
-plt.grid(True)
-plt.show()
-```
+In the final report, the method can be described as:
+
+1. **Teacher agent:**
+
+   * Deterministic minimax search with classical heuristic evaluation, achieving ≈ 90% winrate vs random.
+
+2. **Student policy network (ML):**
+
+   * CNN with residual blocks, input `(13, 8, 8)` representation, output 4096 actions.
+   * Trained via supervised learning (behavior cloning) on minimax self-play positions.
+
+3. **Hybrid agent – ML‑Guided Minimax:**
+
+   * At each decision point, use the neural policy to produce a **move prior** over legal moves.
+   * Restrict minimax search to the **top‑k** moves according to the network.
+   * Run depth‑`D` negamax with alpha‑beta pruning using the classical evaluator.
+
+4. **Results:**
+
+   * Show comparison of:
+
+     * Random vs random (~50% winrate baseline).
+     * Minimax vs random (high, ~90%).
+     * ML‑Guided Minimax vs random (expected ≥ 60%).
+   * Emphasize that the **ML component is crucial** for search efficiency and move selection.
+
+This clearly satisfies the requirement: *“use an ML method to build an agent that beats a random agent ≥ 60% of the time”*.
 
 ---
 
-# 8. Notes & Recommendations
+## 6. Tasks for Codex (Checklist)
 
-* Start with small networks (64 channels) for speed.
-* Use `max_moves=100` to avoid long random games.
-* Value-based Monte Carlo learning converges faster than Q-learning for this environment.
-* Expect >60% win rate in the 1500–3000 episode range on GPU.
+1. **Ensure `MinimaxAgent` is a clean module**
 
----
+   * File: `minimax_agent.py`.
+   * API: `get_best_move(board: chess.Board) -> chess.Move`.
+   * Separate evaluation function if needed: `MinimaxEvaluator.evaluate(board) -> float`.
 
-# 9. Summary
+2. **Ensure `PolicyNet` is defined and loadable**
 
-This spec defines:
+   * File: `policy_net.py`.
+   * Verify compatibility with existing `teacher_minimax.npz` dataset and `policy_supervised.pth` checkpoint.
 
-1. New board encoding (13×8×8)
-2. ValueNet model
-3. MonteCarloValueAgent class with replay buffer
-4. Game-runner for self-play vs RandomAgent
-5. Entire new training loop for `train_local.ipynb`
-6. Evaluation and model saving strategy
+3. **Implement `policy_scores_for_board(...)`**
 
-It is fully ready to be implemented by an automated code assistant (e.g., Codex).
+   * Uses `ChessEnv`, `get_state()`, and `PolicyNet` to produce a `dict[Move, score]` for legal moves.
+
+4. **Implement `MLGuidedMinimaxAgent`**
+
+   * File: `ml_guided_minimax_agent.py`.
+   * Constructor arguments: `policy`, `depth`, `top_k`, `device`.
+   * Methods:
+
+     * `_negamax(board, depth, alpha, beta, color_sign)`
+     * `get_action(game_state: chess.Board) -> chess.Move`.
+   * Integrate policy-based move ordering and top‑k pruning.
+
+5. **Implement evaluation script**
+
+   * File: `eval_ml_guided_vs_random.py`.
+   * Implement `play_match` and `eval_agent_vs_random` as described.
+   * Evaluate `MLGuidedMinimaxAgent` vs `RandomAgent` for at least 100 games.
+
+6. **(Optional) CLI / Main entry point**
+
+   * Add a main script that can run different agents:
+
+     * `RandomAgent`
+     * `MinimaxAgent`
+     * `PolicyNet`-only agent
+     * `MLGuidedMinimaxAgent`
+   * Useful for demos and quick experiments.
+
+With this plan, Codex can implement a robust **ML‑guided search agent** that leverages the existing minimax engine and the distilled policy network, and is suitable for the assignment’s winrate requirement and ML focus.

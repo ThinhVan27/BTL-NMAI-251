@@ -76,6 +76,7 @@ def play(agent1: Agent, agent2: Agent, interval: float = 0, pgn: bool = False, v
             break
     
     pgn_text = ""
+    length = -1
     if pgn:
         # length = len(str(game))
         length = 0
@@ -91,7 +92,7 @@ def play(agent1: Agent, agent2: Agent, interval: float = 0, pgn: bool = False, v
         else:
             winner = "-1"
     
-    return (winner, pgn_text, length) if pgn else winner
+    return (winner, pgn_text, length)
         
 parser = argparse.ArgumentParser()
 parser.add_argument("--path", type=str, default="models/chess_2000.pth")
@@ -103,9 +104,9 @@ parser.add_argument("--save", action="store_true")
 args = parser.parse_args()
 
 if __name__ == "__main__":
-    a1 = RLAgent()
+    a1 = MinimaxAgent(depth=3)
     a2 = RandomAgent()
-    a1.load(args.path)
+    # a1.load(args.path)
     win = 0
     N = args.N
     for i in range(N):
