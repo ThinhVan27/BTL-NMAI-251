@@ -7,7 +7,7 @@ from utils import *
 
 check_mate = 10000
 stale_mate = 0
-DEPTH = 2
+DEPTH = 3
 
 
 class MinimaxAgent(Agent):
