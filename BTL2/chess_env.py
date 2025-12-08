@@ -1,4 +1,3 @@
-# chess_env_v2.py
 import chess
 import numpy as np
 

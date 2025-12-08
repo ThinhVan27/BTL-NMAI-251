@@ -3,7 +3,7 @@ import chess
 import torch
 
 from random_agent import RandomAgent
-from ml_guided_minimax_agent import MLGuidedMinimaxAgent
+from hybrid_ml_minimax_agent import MLGuidedMinimaxAgent
 from policy_net import PolicyNet
 
 
