@@ -3,7 +3,7 @@ import chess
 import torch
 
 from agent import Agent
-from chess_env_v2 import ChessEnv
+from chess_env import ChessEnv
 from policy_net import PolicyNet
 from utils import get_piece, pieceScore, piecePosScores
 
